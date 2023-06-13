@@ -1,0 +1,196 @@
+﻿@page "/"
+@using CsvHelper.Configuration
+
+<h1>Des Moines Transit</h1>
+
+<div style="display: flex; flex-direction: row; justify-content: space-between; margin: 1rem 5vw;">
+    <label>
+        Find a route: <input type="text" @bind="routeSearchText" />
+        <button @onclick="OnSearch">Search</button>
+    </label>
+    <label>
+        Bus delay in ms (lower = faster): <input type="number" @bind="busDelay" />
+    </label>
+</div>
+<br />
+<br />
+<MapView Longitude="-93.598022" Latitude="41.619549" Zoom="11" 
+         Style="height: 80vh; width: 90vw; margin-left: 5vw;"
+         @ref="mapView"
+         OnClick="OnClick">
+    <Map ArcGISDefaultBasemap="arcgis-streets">
+        <FeatureLayer Url="https://services.arcgis.com/8lRhdTsQyJpO52F1/arcgis/rest/services/IowaGTFS_View/FeatureServer/0/"
+                      @ref="routesLayer">
+            <PopupTemplate @ref="popupTemplate" Title="{trip_headsign}" ContentFunction="BuildPopupContent">
+                <ActionButton Image="@(isPaused ? "images/play.png" : "images/pause.png")"
+                                Title="@(isPaused ? "Play" : "Pause")"
+                                Id="play"
+                                CallbackFunction="StartOrPause" />
+            </PopupTemplate>
+        </FeatureLayer>
+        <FeatureLayer Url="https://services.arcgis.com/8lRhdTsQyJpO52F1/arcgis/rest/services/IowaGTFS_View/FeatureServer/1"
+                      @ref="stopsLayer" />
+    </Map>
+    <PopupWidget @ref="popupWidget" DockEnabled="true">
+        <PopupDockOptions ButtonEnabled="false"
+                          BreakPoint="@(new BreakPoint(false))"
+                          Position="PopupDockPosition.BottomRight" />
+    </PopupWidget>
+    <Graphic @ref="busGraphic">
+        <PictureMarkerSymbol Url="https://static.arcgis.com/images/Symbols/Transportation/Bus.png" Width="20" Height="20" />
+    </Graphic>
+    <LayerListWidget Position="OverlayPosition.TopRight" />
+    <LocateWidget Position="OverlayPosition.TopLeft" />
+    <ScaleBarWidget Position="OverlayPosition.BottomLeft" />
+</MapView>
+
+@code {
+    [Inject] 
+    GeometryEngine GeometryEngine { get; set; } = default!;
+
+    [Inject]
+    IWebHostEnvironment WebHostEnvironment { get; set; } = default!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await GetStopTimeData();
+    }
+
+    private async Task OnClick(ClickEvent clickEvent)
+    {
+        HitTestOptions options = new()
+        {
+            IncludeByGeoBlazorId = new[] { routesLayer!.Id }
+        };
+        HitTestResult result = await mapView!.HitTest(clickEvent, options);
+        Graphic? feature = result.Results.OfType<GraphicHit>().FirstOrDefault()?.Graphic;
+        if (feature is not null)
+        {
+            var query = await routesLayer.CreateQuery();
+            query.ObjectIds = new[] { (int)(long)feature!.Attributes["OBJECTID"] };
+            query.OutFields = new[] { "*" };
+            feature = (await routesLayer.QueryFeatures(query))!.Features!.First();
+            await DriveTheBus(feature);
+        }
+    }
+
+    private async Task DriveTheBus(Graphic? feature)
+    {
+        if (cancellationTokenSource is not null)
+        {
+            cancellationTokenSource.Cancel();
+        }
+
+        cancellationTokenSource = new CancellationTokenSource();
+        var token = cancellationTokenSource.Token;
+        if (feature is null)
+        {
+            Console.WriteLine("No feature found");
+            return;
+        }
+
+        isPaused = false;
+        await mapView!.OpenPopup(new PopupOpenOptions()
+        {
+            Features = new Graphic[] { feature }
+        });
+
+        var stopTimes = stopTimeData!.Where(s => s.trip_id == feature.Attributes["trip_id"].ToString())
+            .OrderBy(s => s.stop_sequence).ToList();
+
+
+        foreach (var stopTime in stopTimes)
+        {
+            while (isPaused)
+            {
+                await Task.Delay(100);
+            }
+            currentStopId = stopTime.stop_id;
+            var stop = stopData!.First(s => s.stop_id == stopTime.stop_id);
+
+            var busPoint = new Point(stop.stop_lon, stop.stop_lat);
+            await busGraphic!.SetGeometry(busPoint);
+            StateHasChanged();
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+            await Task.Delay(busDelay, token);
+        }
+    }
+
+    private ValueTask<PopupContent[]> BuildPopupContent(Graphic graphic)
+    {
+        List<PopupContent> popupContents = new();
+        if (currentStopId is null)
+        {
+            return ValueTask.FromResult(popupContents.ToArray());
+        }
+
+        var currentStop = stopData!.First(s => s.stop_id == currentStopId);
+        var currentStopTime = stopTimeData!.First(s => s.stop_id == currentStopId);
+        var stopTime = TimeOnly.Parse(currentStopTime.arrival_time);
+        popupContents.Add(new TextPopupContent($"Stop #{currentStopTime.stop_sequence}: {currentStop.stop_name}, {stopTime}"));
+        popupContents.Add(new TextPopupContent($"Coordinates: LAT: {currentStop.stop_lat}, LONG: {currentStop.stop_lon}"));
+
+        return ValueTask.FromResult(popupContents.ToArray());
+    }
+
+    private async Task StartOrPause()
+    {
+        await InvokeAsync(() =>
+        {
+            isPaused = !isPaused;
+            StateHasChanged();
+        });
+    }
+
+    private async Task GetStopTimeData()
+    {
+        stopTimeData = new List<StopTimeData>();
+        var filePath = Path.Combine(WebHostEnvironment.WebRootPath, "stop_times.csv");
+        using (StreamReader reader = new StreamReader(filePath))
+        using (CsvReader csvReader = new CsvReader(reader, CultureInfo.InvariantCulture))
+        {
+            stopTimeData = csvReader.GetRecords<StopTimeData>().ToList()!;
+        }
+
+        filePath = Path.Combine(WebHostEnvironment.WebRootPath, "stops.csv");
+        using (StreamReader reader = new StreamReader(filePath))
+        using (CsvReader csvReader = new CsvReader(reader, CultureInfo.InvariantCulture))
+        {
+            stopData = csvReader.GetRecords<StopData>().ToList();
+        }
+        Console.WriteLine("Data Loaded");
+    }
+
+    private async Task OnSearch()
+    {
+        var query = await routesLayer!.CreateQuery();
+        query.OutFields = new string[] { "OBJECTID" };
+        query.Where = $"route_shortname LIKE '%{routeSearchText}%' OR route_long LIKE '%{routeSearchText}%'";
+        var featureSet = await routesLayer!.QueryFeatures(query);
+        if (featureSet?.Features is not null && featureSet.Features.Any())
+        {
+            Graphic feature = featureSet.Features.First();
+            await DriveTheBus(feature);
+        }
+    }
+
+    private MapView? mapView;
+    private FeatureLayer? routesLayer;
+    private FeatureLayer? stopsLayer;
+    private PopupTemplate? popupTemplate;
+    private PopupWidget? popupWidget;
+    private Graphic? busGraphic;
+    private string? currentStopId;
+    private List<StopData>? stopData;
+    private List<StopTimeData>? stopTimeData;
+    private CancellationTokenSource? cancellationTokenSource = new();
+    private bool isPaused;
+    private string routeSearchText = string.Empty;
+    private int busDelay = 1000;
+
+    private record StopTimeData(string trip_id, string arrival_time, string stop_id, int stop_sequence);
+    private record StopData(string stop_id, string stop_name, double stop_lat, double stop_lon);
+}
