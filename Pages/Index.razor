@@ -28,32 +28,26 @@
                                 CallbackFunction="StartOrPause" />
             </PopupTemplate>
         </FeatureLayer>
-        <FeatureLayer Url="https://services.arcgis.com/8lRhdTsQyJpO52F1/arcgis/rest/services/IowaGTFS_View/FeatureServer/1"
-                      @ref="stopsLayer" />
+        <FeatureLayer Url="https://services.arcgis.com/8lRhdTsQyJpO52F1/arcgis/rest/services/IowaGTFS_View/FeatureServer/1" />
     </Map>
     <PopupWidget @ref="popupWidget" DockEnabled="true">
         <PopupDockOptions ButtonEnabled="false"
                           BreakPoint="@(new BreakPoint(false))"
                           Position="PopupDockPosition.BottomRight" />
     </PopupWidget>
-    <Graphic @ref="busGraphic">
-        <PictureMarkerSymbol Url="https://static.arcgis.com/images/Symbols/Transportation/Bus.png" Width="20" Height="20" />
-    </Graphic>
     <LayerListWidget Position="OverlayPosition.TopRight" />
     <LocateWidget Position="OverlayPosition.TopLeft" />
     <ScaleBarWidget Position="OverlayPosition.BottomLeft" />
 </MapView>
 
 @code {
-    [Inject] 
-    GeometryEngine GeometryEngine { get; set; } = default!;
 
     [Inject]
     IWebHostEnvironment WebHostEnvironment { get; set; } = default!;
 
-    protected override async Task OnInitializedAsync()
+    protected override void OnInitialized()
     {
-        await GetStopTimeData();
+        GetStopTimeData();
     }
 
     private async Task OnClick(ClickEvent clickEvent)
@@ -98,7 +92,7 @@
         var stopTimes = stopTimeData!.Where(s => s.trip_id == feature.Attributes["trip_id"].ToString())
             .OrderBy(s => s.stop_sequence).ToList();
 
-
+        await mapView.AddGraphic(busGraphic!);
         foreach (var stopTime in stopTimes)
         {
             while (isPaused)
@@ -117,6 +111,7 @@
             }
             await Task.Delay(busDelay, token);
         }
+        await mapView.RemoveGraphic(busGraphic!);
     }
 
     private ValueTask<PopupContent[]> BuildPopupContent(Graphic graphic)
@@ -145,8 +140,12 @@
         });
     }
 
-    private async Task GetStopTimeData()
+    private void GetStopTimeData()
     {
+        if (stopTimeData is not null)
+        {
+            return;
+        }
         stopTimeData = new List<StopTimeData>();
         var filePath = Path.Combine(WebHostEnvironment.WebRootPath, "stop_times.csv");
         using (StreamReader reader = new StreamReader(filePath))
@@ -161,14 +160,13 @@
         {
             stopData = csvReader.GetRecords<StopData>().ToList();
         }
-        Console.WriteLine("Data Loaded");
     }
 
     private async Task OnSearch()
     {
         var query = await routesLayer!.CreateQuery();
-        query.OutFields = new string[] { "OBJECTID" };
-        query.Where = $"route_shortname LIKE '%{routeSearchText}%' OR route_long LIKE '%{routeSearchText}%'";
+        query.OutFields = new string[] { "OBJECTID", "trip_id" };
+        query.Where = $"route_shortname LIKE '%{routeSearchText}%' OR route_long LIKE '%{routeSearchText}%' OR trip_headsign LIKE '%{routeSearchText}%'";
         var featureSet = await routesLayer!.QueryFeatures(query);
         if (featureSet?.Features is not null && featureSet.Features.Any())
         {
@@ -179,10 +177,9 @@
 
     private MapView? mapView;
     private FeatureLayer? routesLayer;
-    private FeatureLayer? stopsLayer;
     private PopupTemplate? popupTemplate;
     private PopupWidget? popupWidget;
-    private Graphic? busGraphic;
+    private Graphic? busGraphic = new Graphic(new Point(0, 0), new PictureMarkerSymbol("https://static.arcgis.com/images/Symbols/Transportation/Bus.png", 20, 20));
     private string? currentStopId;
     private List<StopData>? stopData;
     private List<StopTimeData>? stopTimeData;
