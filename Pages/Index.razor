@@ -1,8 +1,6 @@
 ﻿@page "/"
-@using CsvHelper.Configuration
 
 <h1>Des Moines Transit</h1>
-
 <div style="display: flex; flex-direction: row; justify-content: space-between; margin: 1rem 5vw;">
     <label>
         Find a route: <input type="text" @bind="routeSearchText" />
@@ -16,128 +14,42 @@
 <br />
 <MapView Longitude="-93.598022" Latitude="41.619549" Zoom="11" 
          Style="height: 80vh; width: 90vw; margin-left: 5vw;"
-         @ref="mapView"
-         OnClick="OnClick">
-    <Map ArcGISDefaultBasemap="arcgis-streets">
-        <FeatureLayer Url="https://services.arcgis.com/8lRhdTsQyJpO52F1/arcgis/rest/services/IowaGTFS_View/FeatureServer/0/"
-                      @ref="routesLayer">
+         OnClick="OnClick"
+         @ref="mapView">
+    <Map ArcGISDefaultBasemap="arcgis-human-geography">
+        <FeatureLayer @ref="routesLayer" Url="https://services.arcgis.com/8lRhdTsQyJpO52F1/arcgis/rest/services/IowaGTFS_View/FeatureServer/0/">
             <PopupTemplate @ref="popupTemplate" Title="{trip_headsign}" ContentFunction="BuildPopupContent">
-                <ActionButton Image="@(isPaused ? "images/play.png" : "images/pause.png")"
-                                Title="@(isPaused ? "Play" : "Pause")"
-                                Id="play"
-                                CallbackFunction="StartOrPause" />
+                <ActionButton Image="@(isPaused ? "images/play.jpg" : "images/pause.jpg")"
+                    Title="@(isPaused ? "Play" : "Pause")"
+                    Id="play"
+                    CallbackFunction="StartOrPause" />
             </PopupTemplate>
         </FeatureLayer>
         <FeatureLayer Url="https://services.arcgis.com/8lRhdTsQyJpO52F1/arcgis/rest/services/IowaGTFS_View/FeatureServer/1" />
     </Map>
-    <PopupWidget @ref="popupWidget" DockEnabled="true">
-        <PopupDockOptions ButtonEnabled="false"
-                          BreakPoint="@(new BreakPoint(false))"
-                          Position="PopupDockPosition.BottomRight" />
-    </PopupWidget>
     <LayerListWidget Position="OverlayPosition.TopRight" />
     <LocateWidget Position="OverlayPosition.TopLeft" />
     <ScaleBarWidget Position="OverlayPosition.BottomLeft" />
+    <PopupWidget @ref="popupWidget" DockEnabled="true">
+        <PopupDockOptions ButtonEnabled="false"
+                        BreakPoint="@(new BreakPoint(false))"
+                        Position="PopupDockPosition.BottomRight" />
+    </PopupWidget>
 </MapView>
+@if (showOtto)
+{
+    <div style="position: absolute; left: calc(50vw - 240px); top: calc(50vh - 188px); z-index: 1000;">
+        <iframe src="https://giphy.com/embed/3orifd633sXjm5mwus" width="480" height="366" frameBorder="0" class="giphy-embed" allowFullScreen></iframe><p><a href="https://giphy.com/gifs/season-2-the-simpsons-2x1-3orifd633sXjm5mwus">via GIPHY</a></p>
+    </div>
+}
 
 @code {
-
     [Inject]
     IWebHostEnvironment WebHostEnvironment { get; set; } = default!;
 
     protected override void OnInitialized()
     {
         GetStopTimeData();
-    }
-
-    private async Task OnClick(ClickEvent clickEvent)
-    {
-        HitTestOptions options = new()
-        {
-            IncludeByGeoBlazorId = new[] { routesLayer!.Id }
-        };
-        HitTestResult result = await mapView!.HitTest(clickEvent, options);
-        Graphic? feature = result.Results.OfType<GraphicHit>().FirstOrDefault()?.Graphic;
-        if (feature is not null)
-        {
-            var query = await routesLayer.CreateQuery();
-            query.ObjectIds = new[] { (int)(long)feature!.Attributes["OBJECTID"] };
-            query.OutFields = new[] { "*" };
-            feature = (await routesLayer.QueryFeatures(query))!.Features!.First();
-            await DriveTheBus(feature);
-        }
-    }
-
-    private async Task DriveTheBus(Graphic? feature)
-    {
-        if (cancellationTokenSource is not null)
-        {
-            cancellationTokenSource.Cancel();
-        }
-
-        cancellationTokenSource = new CancellationTokenSource();
-        var token = cancellationTokenSource.Token;
-        if (feature is null)
-        {
-            Console.WriteLine("No feature found");
-            return;
-        }
-
-        isPaused = false;
-        await mapView!.OpenPopup(new PopupOpenOptions()
-        {
-            Features = new Graphic[] { feature }
-        });
-
-        var stopTimes = stopTimeData!.Where(s => s.trip_id == feature.Attributes["trip_id"].ToString())
-            .OrderBy(s => s.stop_sequence).ToList();
-
-        await mapView.AddGraphic(busGraphic!);
-        foreach (var stopTime in stopTimes)
-        {
-            while (isPaused)
-            {
-                await Task.Delay(100);
-            }
-            currentStopId = stopTime.stop_id;
-            var stop = stopData!.First(s => s.stop_id == stopTime.stop_id);
-
-            var busPoint = new Point(stop.stop_lon, stop.stop_lat);
-            await busGraphic!.SetGeometry(busPoint);
-            StateHasChanged();
-            if (token.IsCancellationRequested)
-            {
-                return;
-            }
-            await Task.Delay(busDelay, token);
-        }
-        await mapView.RemoveGraphic(busGraphic!);
-    }
-
-    private ValueTask<PopupContent[]> BuildPopupContent(Graphic graphic)
-    {
-        List<PopupContent> popupContents = new();
-        if (currentStopId is null)
-        {
-            return ValueTask.FromResult(popupContents.ToArray());
-        }
-
-        var currentStop = stopData!.First(s => s.stop_id == currentStopId);
-        var currentStopTime = stopTimeData!.First(s => s.stop_id == currentStopId);
-        var stopTime = TimeOnly.Parse(currentStopTime.arrival_time);
-        popupContents.Add(new TextPopupContent($"Stop #{currentStopTime.stop_sequence}: {currentStop.stop_name}, {stopTime}"));
-        popupContents.Add(new TextPopupContent($"Coordinates: LAT: {currentStop.stop_lat}, LONG: {currentStop.stop_lon}"));
-
-        return ValueTask.FromResult(popupContents.ToArray());
-    }
-
-    private async Task StartOrPause()
-    {
-        await InvokeAsync(() =>
-        {
-            isPaused = !isPaused;
-            StateHasChanged();
-        });
     }
 
     private void GetStopTimeData()
@@ -162,6 +74,104 @@
         }
     }
 
+    private async Task OnClick(dymaptic.GeoBlazor.Core.Events.ClickEvent clickEvent)
+    {
+        HitTestOptions options = new()
+        {
+            IncludeByGeoBlazorId = new[] { routesLayer!.Id }
+        };
+        HitTestResult result = await mapView!.HitTest(clickEvent, options);
+        Graphic? feature = result.Results.OfType<GraphicHit>().FirstOrDefault()?.Graphic;
+        if (feature is not null)
+        {
+            var query = await routesLayer.CreateQuery();
+            query.ObjectIds = new[] { (int)(long)feature!.Attributes["OBJECTID"] };
+            query.OutFields = new[] { "*" };
+            feature = (await routesLayer.QueryFeatures(query))!.Features!.First();
+            
+            await DriveTheBus(feature);
+        }
+    }
+
+    private async Task DriveTheBus(Graphic? feature)
+    {
+        if (cancellationTokenSource is not null)
+        {
+            cancellationTokenSource.Cancel();
+        }
+
+        cancellationTokenSource = new CancellationTokenSource();
+        var token = cancellationTokenSource.Token;
+        if (feature is null)
+        {
+            // no route found
+            return;
+        }
+
+        isPaused = false;
+        await mapView!.OpenPopup(new PopupOpenOptions()
+        {
+            Features = new Graphic[] { feature }
+        });
+
+        var stopTimes = stopTimeData!.Where(s => s.trip_id == feature.Attributes["trip_id"].ToString())
+            .OrderBy(s => s.stop_sequence).ToList();
+
+        await mapView.AddGraphic(busGraphic!);
+        foreach (var stopTime in stopTimes)
+        {
+            while (isPaused)
+            {
+                await Task.Delay(100);
+            }
+            currentStopId = stopTime.stop_id;
+            var stop = stopData!.First(s => s.stop_id == stopTime.stop_id);
+
+            var busPoint = new Point(stop.stop_lon, stop.stop_lat);
+            await busGraphic!.SetGeometry(busPoint);
+            await mapView!.SetCenter(busPoint);
+            StateHasChanged();
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+            await Task.Delay(busDelay, token);
+        }
+        await mapView.RemoveGraphic(busGraphic!);
+        showOtto = true;
+        StateHasChanged();
+        await Task.Delay(4000);
+        showOtto = false;
+        StateHasChanged();
+    }
+
+    private ValueTask<PopupContent[]> BuildPopupContent(Graphic graphic)
+    {
+        List<PopupContent> popupContents = new();
+        if (currentStopId is null)
+        {
+            return ValueTask.FromResult(popupContents.ToArray());
+        }
+
+        var currentStop = stopData!.First(s => s.stop_id == currentStopId);
+        var currentStopTime = stopTimeData!.First(s => s.stop_id == currentStopId);
+        var stopTime = TimeOnly.Parse(currentStopTime.arrival_time);
+        popupContents.Add(new TextPopupContent($"Stop #{currentStopTime.stop_sequence}: {currentStop.stop_name}, {stopTime}"));
+        popupContents.Add(new TextPopupContent($"Coordinates: LAT: {currentStop.stop_lat}, LONG: {currentStop.stop_lon}"));
+        popupContents.Add(new TextPopupContent("<a href='https://www.ridedart.com/mydart/trip-planner'>Plan your trip</a>"));
+
+        return ValueTask.FromResult(popupContents.ToArray());
+    }
+
+    private async Task StartOrPause()
+    {
+        await InvokeAsync(() =>
+        {
+            isPaused = !isPaused;
+            StateHasChanged();
+        });
+    }
+
     private async Task OnSearch()
     {
         var query = await routesLayer!.CreateQuery();
@@ -170,23 +180,25 @@
         var featureSet = await routesLayer!.QueryFeatures(query);
         if (featureSet?.Features is not null && featureSet.Features.Any())
         {
-            Graphic feature = featureSet.Features.First();
+            Graphic? feature = featureSet.Features.FirstOrDefault(f => stopTimeData!.Any(s => s.trip_id == f.Attributes["trip_id"].ToString()));
             await DriveTheBus(feature);
         }
     }
+
 
     private MapView? mapView;
     private FeatureLayer? routesLayer;
     private PopupTemplate? popupTemplate;
     private PopupWidget? popupWidget;
-    private Graphic? busGraphic = new Graphic(new Point(0, 0), new PictureMarkerSymbol("https://static.arcgis.com/images/Symbols/Transportation/Bus.png", 20, 20));
-    private string? currentStopId;
     private List<StopData>? stopData;
     private List<StopTimeData>? stopTimeData;
+    private Graphic? busGraphic = new Graphic(new Point(0, 0), new PictureMarkerSymbol("images/bus.jpg", 30, 30));
     private CancellationTokenSource? cancellationTokenSource = new();
     private bool isPaused;
-    private string routeSearchText = string.Empty;
     private int busDelay = 1000;
+    private string? currentStopId;
+    private string routeSearchText = string.Empty;
+    private bool showOtto;
 
     private record StopTimeData(string trip_id, string arrival_time, string stop_id, int stop_sequence);
     private record StopData(string stop_id, string stop_name, double stop_lat, double stop_lon);

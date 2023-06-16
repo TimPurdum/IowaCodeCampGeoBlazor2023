@@ -8,20 +8,27 @@ tim.purdum@dymaptic.com
 
 https://timpurdum.dev
 
+https://dymaptic.com
+
 <br/>
 
 ## Setting Up
 
-[Getting Started | GeoBlazor](https://docs.geoblazor.com/pages/gettingStarted.html)
+- Use [Getting Started | GeoBlazor](https://docs.geoblazor.com/pages/gettingStarted.html) or this readme to get set up.
 
 ```bash
-dotnet new blazorserver-empty
-dotnet add package dymaptic.GeoBlazor.Core
+dotnet new blazorserver-empty -o ICC-GB
+cd ICC-GB
+dotnet add package dymaptic.GeoBlazor.Core --prerelease
 ```
 
-[API keys | ArcGIS Developers](https://developers.arcgis.com/api-keys/)
+- Create a free account for https://developers.arcgis.com
+- See [Pricing | ArcGIS Developers](https://developers.arcgis.com/pricing/) for pricing details. Costs are per use, 2 million tiles free
+- Visit [API keys | ArcGIS Developers](https://developers.arcgis.com/api-keys/) to generate an API Key
 
 ### `appsettings.json` or `secrets.json`
+
+- See [Safe storage of app secrets in development in ASP.NET Core | Microsoft Learn](https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets?view=aspnetcore-7.0&tabs=windows) on why you should *not* store tokens in the repository!
 
 ```json
 "ArcGISApiKey": "YOUR KEY HERE"
@@ -45,6 +52,7 @@ dotnet add package dymaptic.GeoBlazor.Core
 @using dymaptic.GeoBlazor.Core.Components.Symbols
 @using dymaptic.GeoBlazor.Core.Components.Views
 @using dymaptic.GeoBlazor.Core.Components.Widgets
+@using dymaptic.GeoBlazor.Core.Events
 @using dymaptic.GeoBlazor.Core.Objects
 ```
 
@@ -67,7 +75,7 @@ app.UseStaticFiles(new StaticFileOptions
 });
 ```
 
-[Map | API Reference | ArcGIS Maps SDK for JavaScript 4.26 | ArcGIS Developers](https://developers.arcgis.com/javascript/latest/api-reference/esri-Map.html#basemap)
+- Select an ArcGIS Basemap from [Map | API Reference | ArcGIS Maps SDK for JavaScript 4.26 | ArcGIS Developers](https://developers.arcgis.com/javascript/latest/api-reference/esri-Map.html#basemap)
 
 ## Display a Map
 
@@ -88,7 +96,7 @@ private MapView? mapView;
 
 ## Add DART Routes & Stops
 
-[Routes | Routes | Iowa Department of Transportation - Open Data (arcgis.com)](https://public-iowadot.opendata.arcgis.com/datasets/routes/explore)
+- Found the data at [Iowa Department of Transportation - Open Data (arcgis.com)](https://public-iowadot.opendata.arcgis.com/)
 
 ```html
 <Map ArcGISDefaultBasemap="arcgis-streets">
@@ -192,6 +200,12 @@ private record StopData(string stop_id, string stop_name, double stop_lat, doubl
 
 ## Add Click Handler
 
+- Set up and test with a Console message
+
+```html
+<MapView OnClick="OnClick" ...>
+```
+
 ```csharp
 private async Task OnClick(ClickEvent clickEvent)
 {
@@ -207,12 +221,17 @@ private async Task OnClick(ClickEvent clickEvent)
         query.ObjectIds = new[] { (int)(long)feature!.Attributes["OBJECTID"] };
         query.OutFields = new[] { "*" };
         feature = (await routesLayer.QueryFeatures(query))!.Features!.First();
-        await DriveTheBus(feature);
+        Console.WriteLine(feature.Attributes["route_long"]);
+        //await DriveTheBus(feature);
     }
 }
 ```
 
 ## Add Bus Graphic and Animation
+
+- Ask [Stable Diffusion Online (stablediffusionweb.com)](https://stablediffusionweb.com/#demo) to generate a bus icon graphic.
+- Save the graphic to `wwwroot/images/bus.jpg`
+- Uncomment line in `OnClick` to call `DriveTheBus`
 
 ```html
 <div style="display: flex; flex-direction: row; justify-content: space-between; margin: 1rem 5vw;">
@@ -261,6 +280,7 @@ private async Task DriveTheBus(Graphic? feature)
 
         var busPoint = new Point(stop.stop_lon, stop.stop_lat);
         await busGraphic!.SetGeometry(busPoint);
+        await mapView!.SetCenter(busPoint);
         StateHasChanged();
         if (token.IsCancellationRequested)
         {
@@ -271,13 +291,16 @@ private async Task DriveTheBus(Graphic? feature)
     await mapView.RemoveGraphic(busGraphic!);
 }
 
-private Graphic? busGraphic = new Graphic(new Point(0, 0), new PictureMarkerSymbol("https://static.arcgis.com/images/Symbols/Transportation/Bus.png", 20, 20));
+private Graphic? busGraphic = new Graphic(new Point(0, 0), new PictureMarkerSymbol("images/bus.jpg", 30, 30));
 private CancellationTokenSource? cancellationTokenSource = new();
 private bool isPaused;
 private int busDelay = 1000;
+private string? currentStopId;
 ```
 
 ## Create Stop Popup Content
+
+- Rather than setting a constant value or attribute values to the popup, we can generate all the content "on the fly" with a `ContentFunction`.
 
 ```html
 <PopupTemplate @ref="popupTemplate" Title="{trip_headsign}" ContentFunction="BuildPopupContent">
@@ -308,7 +331,7 @@ private ValueTask<PopupContent[]> BuildPopupContent(Graphic graphic)
 
 ```html
 <PopupTemplate @ref="popupTemplate" Title="{trip_headsign}" ContentFunction="BuildPopupContent">
-    <ActionButton Image="@(isPaused ? "images/play.png" : "images/pause.png")"
+    <ActionButton Image="@(isPaused ? "images/play.jpg" : "images/pause.jpg")"
                     Title="@(isPaused ? "Play" : "Pause")"
                     Id="play"
                     CallbackFunction="StartOrPause" />
@@ -349,11 +372,39 @@ private async Task OnSearch()
     var featureSet = await routesLayer!.QueryFeatures(query);
     if (featureSet?.Features is not null && featureSet.Features.Any())
     {
-        Graphic feature = featureSet.Features.First();
-        await DriveTheBus(feature);
+        Graphic? feature = featureSet.Features.FirstOrDefault(f => stopTimeData!.Any(s => s.trip_id == f.Attributes["trip_id"].ToString()));
+        if (feature is not null)
+        {
+            await DriveTheBus(feature);
+        }
     }
 }
 
 private string routeSearchText = string.Empty;
+```
+
+## Get Off the Bus!
+
+```html
+@if (showOtto)
+{
+    <div style="position: absolute; left: calc(50vw - 240px); top: calc(50vh - 188px); z-index: 1000;">
+        <iframe src="https://giphy.com/embed/3orifd633sXjm5mwus" width="480" height="366" frameBorder="0" class="giphy-embed" allowFullScreen></iframe><p><a href="https://giphy.com/gifs/season-2-the-simpsons-2x1-3orifd633sXjm5mwus">via GIPHY</a></p>
+    </div>
+}
+```
+
+```csharp
+private async Task DriveTheBus(Graphic? feature)
+	...
+    await mapView.RemoveGraphic(busGraphic!);
+    showOtto = true;
+    StateHasChanged();
+    await Task.Delay(4000);
+    showOtto = false;
+    StateHasChanged();
+}
+
+private bool showOtto;
 ```
 
